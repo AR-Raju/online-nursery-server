@@ -3,9 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import express, { NextFunction, Request, Response } from "express";
 import FormData from "form-data";
-import fs from "fs";
 import mongoose, { Document, Schema, model } from "mongoose";
-import multer from "multer";
 
 // Load environment variables from .env file
 dotenv.config();
@@ -19,20 +17,6 @@ app.use(express.urlencoded({ extended: true }));
 
 // Middleware to enable CORS
 app.use(cors());
-
-const upload = multer({
-  dest: "uploads/",
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB limit
-  },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) {
-      cb(null, true);
-    } else {
-      cb(new Error("Not an image! Please upload an image."));
-    }
-  },
-});
 
 // Connect to MongoDB
 mongoose
@@ -196,15 +180,16 @@ app.get(
 
 app.post(
   "/api/products",
-  upload.single("image_url"),
   async (req: Request, res: Response, next: NextFunction) => {
-    const { name, description, price, stock, category, rating } = req.body;
+    const { name, description, price, stock, category, rating, image_base64 } =
+      req.body;
     let image_url = "";
-    if (req.file) {
-      const formData = new FormData();
-      formData.append("image", fs.createReadStream(req.file.path));
 
+    if (image_base64) {
       try {
+        const formData = new FormData();
+        formData.append("image", image_base64);
+
         const imgbbResponse = await axios.post(
           "https://api.imgbb.com/1/upload",
           formData,
@@ -217,9 +202,6 @@ app.post(
         );
 
         image_url = imgbbResponse.data.data.url;
-
-        // Delete the temporary file
-        fs.unlinkSync(req.file.path);
       } catch (error) {
         return next(error);
       }
@@ -517,19 +499,6 @@ app.put(
     }
   }
 );
-
-// Handle Multer error
-app.use((err: any, req: Request, res: Response, next: NextFunction) => {
-  if (err instanceof multer.MulterError) {
-    console.error("Multer error:", err);
-    return res.status(400).json({
-      success: false,
-      statusCode: 400,
-      message: err.message,
-    });
-  }
-  next(err);
-});
 
 // Error handling middleware
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
