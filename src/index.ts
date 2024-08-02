@@ -11,12 +11,18 @@ dotenv.config();
 // Initialize Express app
 const app = express();
 
-// Middleware to parse JSON bodies
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Apply CORS middleware before defining routes
+const corsOptions = {
+  origin: "http://localhost:5173",
+  methods: "GET,HEAD,PUT,PATCH,POST,DELETE",
+  credentials: true,
+  optionsSuccessStatus: 204,
+};
+app.use(cors(corsOptions));
 
-// Middleware to enable CORS
-app.use(cors());
+// Apply JSON and URL-encoded parsing middleware
+app.use(express.json({ limit: "10mb" })); // Increase limit if necessary
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 // Connect to MongoDB
 mongoose
@@ -31,7 +37,7 @@ interface IProduct extends Document {
   price: number;
   stock: number;
   category: string;
-  rating: number;
+  rating?: number;
   image_url: string;
 }
 
@@ -42,7 +48,7 @@ const productSchema = new Schema<IProduct>(
     price: { type: Number, required: true },
     stock: { type: Number, required: true },
     category: { type: String, required: true },
-    rating: { type: Number, required: true },
+    rating: { type: Number },
     image_url: { type: String, required: true },
   },
   { timestamps: true }
@@ -53,11 +59,13 @@ const Product = model<IProduct>("Product", productSchema);
 // Define the category schema and model
 interface ICategory extends Document {
   name: string;
+  cover_img: string;
 }
 
 const categorySchema = new Schema<ICategory>(
   {
     name: { type: String, required: true },
+    cover_img: { type: String, required: true },
   },
   { timestamps: true }
 );
@@ -66,27 +74,27 @@ const Category = model<ICategory>("Category", categorySchema);
 
 // Define the order schema and model
 interface IOrderItem {
-  product: Schema.Types.ObjectId;
+  productId: Schema.Types.ObjectId;
   quantity: number;
 }
 
 interface IOrder extends Document {
-  customerName: string;
+  name: string;
   phoneNumber: string;
   address: string;
-  items: IOrderItem[];
+  products: IOrderItem[];
   totalAmount: number;
   status: "pending" | "processing" | "shipped" | "delivered" | "cancelled";
 }
 
 const orderSchema = new Schema<IOrder>(
   {
-    customerName: { type: String, required: true },
+    name: { type: String, required: true },
     phoneNumber: { type: String, required: true },
     address: { type: String, required: true },
-    items: [
+    products: [
       {
-        product: {
+        productId: {
           type: Schema.Types.ObjectId,
           ref: "Product",
           required: true,
@@ -118,34 +126,70 @@ app.get(
       const searchAbleFields = ["name", "description"];
 
       // Searching
-      let searchTerm = (query?.searchTerm as string) || "";
-      const SearchQuery = Product.find({
+      const searchTerm = (query?.searchTerm as string) || "";
+      const searchQuery = Product.find({
         $or: searchAbleFields.map((field) => ({
           [field]: { $regex: searchTerm, $options: "i" },
         })),
       });
 
       // Filtering
-      const excludeField = ["searchTerm", "page", "limit"];
-      excludeField.forEach((el) => delete queryObj[el]);
+      const excludeFields = [
+        "searchTerm",
+        "page",
+        "limit",
+        "sortTerm",
+        "sortOrder",
+        "minPrice",
+        "maxPrice",
+        "categories",
+        "minRating",
+      ];
+      excludeFields.forEach((el) => delete queryObj[el]);
 
-      const FilterQuery = SearchQuery.find(queryObj);
+      // Additional filters
+      const filterConditions: any = { ...queryObj };
+
+      // Price filter
+      if (query.minPrice !== undefined || query.maxPrice !== undefined) {
+        filterConditions.price = {};
+        if (query.minPrice !== undefined)
+          filterConditions.price.$gte = Number(query.minPrice);
+        if (query.maxPrice !== undefined)
+          filterConditions.price.$lte = Number(query.maxPrice);
+      }
+
+      // Categories filter
+      if (query.categories) {
+        filterConditions.categories = {
+          $in: (query.categories as string).split(","),
+        };
+      }
+
+      // Rating filter - only apply if you have implemented ratings
+      if (query.minRating !== undefined) {
+        filterConditions.rating = { $gte: Number(query.minRating) };
+      }
+
+      console.log("Filter conditions:", filterConditions); // Add this line for debugging
+      const filterQuery = searchQuery.find(filterConditions);
 
       // Sorting
-      const sort =
-        (query?.sort as string)?.split(",").join(" ") || "-createdAt";
-      const SortQuery = FilterQuery.sort(sort);
+      const sortTerm = (query?.sortTerm as string) || "createdAt";
+      const sortOrder = (query?.sortOrder as string) === "desc" ? -1 : 1;
+      const sortQuery = filterQuery.sort({ [sortTerm]: sortOrder });
 
       // Pagination
       const page = Number(query?.page) || 1;
       const limit = Number(query?.limit) || 10;
       const skip = (page - 1) * limit;
 
-      const products = await SortQuery.skip(skip).limit(limit);
+      const products = await sortQuery.skip(skip).limit(limit);
 
       res.status(200).json({
         success: true,
         statusCode: 200,
+        message: "Products are retrieved successfully!",
         data: products,
       });
     } catch (error) {
@@ -153,7 +197,6 @@ app.get(
     }
   }
 );
-
 app.get(
   "/api/products/:id",
   async (req: Request, res: Response, next: NextFunction) => {
@@ -163,6 +206,7 @@ app.get(
         res.status(200).json({
           success: true,
           statusCode: 200,
+          message: "Product is retrieved successfully!",
           data: product,
         });
       } else {
@@ -219,9 +263,10 @@ app.post(
 
     try {
       const savedProduct = await product.save();
-      res.status(201).json({
+      res.status(200).json({
         success: true,
-        statusCode: 201,
+        statusCode: 200,
+        message: "Product added successfully!",
         data: savedProduct,
       });
     } catch (error) {
@@ -244,6 +289,7 @@ app.put(
         res.status(200).json({
           success: true,
           statusCode: 200,
+          message: "Product updated successfully!",
           data: updatedProduct,
         });
       } else {
@@ -292,6 +338,7 @@ app.get(
       res.status(200).json({
         success: true,
         statusCode: 200,
+        message: "Categories are retrieved successfully!",
         data: categories,
       });
     } catch (error) {
@@ -303,13 +350,37 @@ app.get(
 app.post(
   "/api/categories",
   async (req: Request, res: Response, next: NextFunction) => {
-    const { name } = req.body;
-    const category = new Category({ name });
+    const { name, image_base64 } = req.body;
+    let image_url = "";
+
+    if (image_base64) {
+      try {
+        const formData = new FormData();
+        formData.append("image", image_base64);
+
+        const imgbbResponse = await axios.post(
+          "https://api.imgbb.com/1/upload",
+          formData,
+          {
+            headers: formData.getHeaders(),
+            params: {
+              key: process.env.IMAGE_BB_API_KEY,
+            },
+          }
+        );
+
+        image_url = imgbbResponse.data.data.url;
+      } catch (error) {
+        return next(error);
+      }
+    }
+    const category = new Category({ name, cover_img: image_url });
     try {
       const savedCategory = await category.save();
-      res.status(201).json({
+      res.status(200).json({
         success: true,
-        statusCode: 201,
+        statusCode: 200,
+        message: "Category added successfully!",
         data: savedCategory,
       });
     } catch (error) {
@@ -331,6 +402,7 @@ app.put(
         res.status(200).json({
           success: true,
           statusCode: 200,
+          message: "Category updated successfully!",
           data: updatedCategory,
         });
       } else {
@@ -375,17 +447,16 @@ app.post(
   "/api/orders",
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { customerName, phoneNumber, address, items } = req.body;
-
+      const { name, phoneNumber, address, products } = req.body;
       // Check stock and calculate total amount
       let totalAmount = 0;
-      for (let item of items) {
-        const product = await Product.findById(item.product);
+      for (let item of products) {
+        const product = await Product.findById(item.productId);
         if (!product) {
           return res.status(404).json({
             success: false,
             statusCode: 404,
-            message: `Product with id ${item.product} not found`,
+            message: `Product with id ${item.productId} not found`,
           });
         }
         if (product.stock < item.quantity) {
@@ -400,24 +471,25 @@ app.post(
 
       // Create order
       const order = new Order({
-        customerName,
+        name,
         phoneNumber,
         address,
-        items,
+        products,
         totalAmount,
       });
 
       // Save order and update product stock
       const savedOrder = await order.save();
-      for (let item of items) {
-        await Product.findByIdAndUpdate(item.product, {
+      for (let item of products) {
+        await Product.findByIdAndUpdate(item.productId, {
           $inc: { stock: -item.quantity },
         });
       }
 
-      res.status(201).json({
+      res.status(200).json({
         success: true,
-        statusCode: 201,
+        statusCode: 200,
+        message: "Order created successfully!",
         data: savedOrder,
       });
     } catch (error) {
@@ -431,10 +503,11 @@ app.get(
   "/api/orders",
   async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const orders = await Order.find().populate("items.product");
+      const orders = await Order.find().populate("products.product");
       res.status(200).json({
         success: true,
         statusCode: 200,
+        message: "Orders are retrived successfully!",
         data: orders,
       });
     } catch (error) {
@@ -449,7 +522,7 @@ app.get(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const order = await Order.findById(req.params.id).populate(
-        "items.product"
+        "products.product"
       );
       if (order) {
         res.status(200).json({
